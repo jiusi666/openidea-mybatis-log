@@ -4,7 +4,8 @@
 > publisher `jiusi` 已在 registry 中，本地 `publishers/jiusi.toml` 与官方条目逐字一致，
 > 所以 PR 的实际差异只有新增的 `plugins/jiusi.mybatis-log.toml`。
 > 顺序：先把源码推到 `jiusi666/openidea-mybatis-log`，发 `v0.1.0` Release 并上传
-> `jiusi.mybatis-log-0.1.0.oiplugin`，再跑 `python scripts/open_pr.py`。**这三步尚未执行。**
+> `jiusi.mybatis-log-0.1.0.oiplugin`，再跑 `python scripts/open_pr.py`。以上三步已于 2026-11-11 执行，
+> PR 为 https://github.com/l0ng-ai/openidea-plugins/pull/117 。
 
 ## 标题
 

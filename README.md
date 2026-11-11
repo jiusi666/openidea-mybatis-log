@@ -102,4 +102,11 @@ Windows + Git Bash 下若报 `link: extra operand`，是 Git 自带的 `link` �
 
 ## 发布状态
 
-本地已构建、打包并验签（`dist/jiusi.mybatis-log-0.1.0.oiplugin`）。**尚未创建 GitHub 仓库、未发 Release、未提交 registry PR**；`publish/` 下是待用草稿，步骤见 `docs/PUBLISHING.md`。本地实机验收仍需在 IDE 里 `Settings › Plugins › Install from Disk` 装一次包。
+上架流程已于 2026-11-11 走完：
+
+- 源码：https://github.com/jiusi666/openidea-mybatis-log
+- Release：https://github.com/jiusi666/openidea-mybatis-log/releases/tag/v0.1.0 （非草稿，附件 `jiusi.mybatis-log-0.1.0.oiplugin`）
+- registry PR：https://github.com/l0ng-ai/openidea-plugins/pull/117
+- `python scripts/check_release.py` 全过：远端附件 sha256、验签、与本地 `dist/` 字节一致。
+
+剩余：等官方 CI（下载附件 → 核 sha256 → 验签 → `openidea-plugin check`）与 maintainer review；合并后约 1 小时出现在 `Settings › Plugins › Available`。本地实机验收仍需在 IDE 里 `Settings › Plugins › Install from Disk` 装一次包。
