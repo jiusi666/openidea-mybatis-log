@@ -1,0 +1,55 @@
+id = "jiusi.mybatis-log"
+name = "MyBatis Log"
+version = "0.1.0"
+description = "把 MyBatis 控制台日志里的 Preparing / Parameters 还原成可直接执行的 SQL：支持粘贴或选中日志、批量还原、字符串与日期自动加引号、null 与数值类型识别、子句换行美化、一键复制和历史记录。只读当前编辑器文本，全部在本机计算，结果缓存在本机；不联网、不执行程序、不修改项目文件。"
+authors = ["九思"]
+license = "Apache-2.0"
+change-notes = """0.1.0 — 首个版本
+· 粘贴或选中 MyBatis 日志，按 ? 顺序还原参数，自动处理引号、null、数值、日期与布尔值
+· 兼容 logback / MyBatis-Plus 等带时间戳前缀的日志，一次可还原多条 SQL
+· 关键字大写、子句换行美化、末尾分号、单双引号与 null 写法可配置
+· 结果一键复制、历史记录本地保存；只申请 editor.read + storage 两个低风险能力"""
+categories = ["tools"]
+engines.openidea = "^1.4"
+icon = "icons/icon.svg"
+icon-dark = "icons/icon_dark.svg"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:mybatis-log", "on-command:*"]
+
+# 能力即权限：editor.read 只读当前编辑器的选中文本，storage 只在本机存面板偏好与历史。
+# 不申请 project.read / editor.write / clipboard / net: / process:，插件不读项目文件、
+# 不写文件、不联网、不跑程序，也不读写系统剪贴板（复制由面板内选中完成）。
+[capabilities]
+required = ["editor.read", "storage"]
+
+[[contributes.commands]]
+id = "restore-selection"
+title = "MyBatis Log: 还原选中的日志"
+category = "MyBatis Log"
+
+[[contributes.commands]]
+id = "clear"
+title = "MyBatis Log: 清空面板"
+category = "MyBatis Log"
+
+[[contributes.keymaps]]
+command = "restore-selection"
+key = "Alt+Shift+M"
+mac = "Meta+Shift+M"
+
+[[contributes.views]]
+id = "mybatis-log"
+title = "MyBatis Log"
+icon = "icons/view.svg"
+location = "right"
+web = "web/index.html"
+
+[contributes.settings]
+title = "MyBatis Log"
+schema = "settings.schema.json"
+
+[[contributes.statusBar]]
+id = "jiusi.mybatis-log.count"
+text = "SQL —"
+tooltip = "点击还原当前编辑器选中的 MyBatis 日志"
+command = "restore-selection"

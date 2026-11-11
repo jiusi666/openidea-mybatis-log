@@ -1,0 +1,43 @@
+{
+  "properties": {
+    "quoteStyle": {
+      "type": "string",
+      "title": "字符串参数使用的引号",
+      "enum": ["single", "double"],
+      "default": "single"
+    },
+    "nullLiteral": {
+      "type": "string",
+      "title": "null 参数的写法",
+      "enum": ["NULL", "null"],
+      "default": "NULL"
+    },
+    "uppercaseKeywords": {
+      "type": "boolean",
+      "title": "展示时把 SQL 关键字转成大写",
+      "default": false
+    },
+    "prettyPrint": {
+      "type": "boolean",
+      "title": "展示时按子句换行美化（复制的仍是单行 SQL）",
+      "default": true
+    },
+    "semicolon": {
+      "type": "boolean",
+      "title": "在还原结果末尾补分号",
+      "default": false
+    },
+    "maxHistory": {
+      "type": "number",
+      "title": "保留最近几次还原的输入（1–30）",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 30
+    },
+    "showStatusBar": {
+      "type": "boolean",
+      "title": "在状态栏显示最近一次还原的 SQL 条数",
+      "default": true
+    }
+  }
+}

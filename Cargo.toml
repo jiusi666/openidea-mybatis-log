@@ -1,0 +1,27 @@
+[package]
+name = "openidea-plugin-mybatis-log"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A plugin builds on its own (target wasm32-wasip2), outside any IDE workspace.
+[workspace]
+exclude = ["vendor/openidea-plugin"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# SDK snapshot, copied in by scripts/init_plugin.py so the build works offline
+# and stays reproducible. To track upstream instead, replace with:
+#   openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "v0.1.40" }
+openidea-plugin = { path = "vendor/openidea-plugin" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

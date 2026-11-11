@@ -1,0 +1,5 @@
+# 统一用 LF。清单文件的字节会进包摘要，CRLF 会让 check 与 verify 对不上。
+* text=auto eol=lf
+
+*.wasm binary
+*.oiplugin binary

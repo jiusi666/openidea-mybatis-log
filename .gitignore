@@ -1,0 +1,7 @@
+/target
+/dist
+/.tmp
+/.keys
+*.oiplugin
+*.key
+__pycache__/

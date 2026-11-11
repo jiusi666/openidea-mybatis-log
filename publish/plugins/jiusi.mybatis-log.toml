@@ -1,0 +1,6 @@
+repository = "https://github.com/jiusi666/openidea-mybatis-log"
+
+[[versions]]
+version = "0.1.0"
+package = "https://github.com/jiusi666/openidea-mybatis-log/releases/download/v0.1.0/jiusi.mybatis-log-0.1.0.oiplugin"
+sha256 = "b2e21db68036fb802d7e37f5f0c2da0f1bff58db614094fdb803030955f5d13f"
