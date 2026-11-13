@@ -26,10 +26,12 @@ const MAX_HISTORY: usize = 30;
 const MAX_HISTORY_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 struct HistoryItem {
     label: String,
     text: String,
+    /// 由「停止输入自动保存」产生；连续修改时合并成一条，不刷屏。
+    auto: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,6 +43,10 @@ struct State {
     history: Vec<HistoryItem>,
     show_status: bool,
     max_history: usize,
+    /// 面板里是否用表格展开参数（关闭时退回紧凑的参数 chip）。
+    show_param_table: bool,
+    /// 面板里是否显示静态 SQL 风险提示。
+    risk_hints: bool,
 }
 
 impl Default for State {
@@ -51,6 +57,8 @@ impl Default for State {
             history: Vec::new(),
             show_status: true,
             max_history: 10,
+            show_param_table: true,
+            risk_hints: true,
         }
     }
 }
@@ -72,6 +80,8 @@ impl State {
             max_history: host::setting_number("maxHistory")
                 .map(|n| (n as usize).clamp(1, MAX_HISTORY))
                 .unwrap_or(10),
+            show_param_table: host::setting_bool("showParamTable").unwrap_or(true),
+            risk_hints: host::setting_bool("riskHints").unwrap_or(true),
             ..Self::default()
         }
     }
@@ -139,6 +149,10 @@ impl MybatisLog {
             "history": self.state.history,
             "source": self.source,
             "maxHistory": self.state.max_history,
+            "display": {
+                "showParamTable": self.state.show_param_table,
+                "riskHints": self.state.risk_hints,
+            },
         })
     }
 
@@ -166,8 +180,32 @@ impl MybatisLog {
         );
     }
 
-    /// 记一条历史：与最近一条相同就不重复记，自动还原也不记。
-    fn add_history(&mut self, text: &str) {
+    /// 历史标签要能一眼分辨：用还原后的 SQL 类型、条数与开头，而不是日志时间戳前缀。
+    fn history_label(&self, text: &str) -> String {
+        if let Some(first) = self.results.first() {
+            let mut sql: String = first.sql.chars().take(40).collect();
+            if first.sql.chars().count() > 40 {
+                sql.push('…');
+            }
+            return format!("{} · {} 条 · {}", first.kind, self.results.len(), sql);
+        }
+        let first_line = text
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        let mut label: String = first_line.chars().take(40).collect();
+        if first_line.chars().count() > 40 {
+            label.push('…');
+        }
+        if label.is_empty() {
+            label = "（空日志）".to_string();
+        }
+        label
+    }
+
+    /// 记一条历史：相同文本不重复；连续自动保存合并成一条，手动保存另起一条。
+    fn add_history(&mut self, text: &str, auto: bool) {
         if text.trim().is_empty() {
             return;
         }
@@ -175,37 +213,31 @@ impl MybatisLog {
         if self.state.history.first().is_some_and(|h| h.text == text) {
             return;
         }
-        let first = text
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim();
-        let mut label: String = first.chars().take(56).collect();
-        if first.chars().count() > 56 {
-            label.push('…');
+        let label = self.history_label(&text);
+        let item = HistoryItem { label, text, auto };
+        if auto && self.state.history.first().is_some_and(|h| h.auto) {
+            self.state.history[0] = item;
+            return;
         }
-        if label.is_empty() {
-            label = "（空日志）".to_string();
-        }
-        self.state.history.insert(0, HistoryItem { label, text });
+        self.state.history.insert(0, item);
         self.state.history.truncate(self.state.max_history);
     }
 
-    fn set_input(&mut self, text: &str, remember: bool, source: &str) {
+    fn set_input(&mut self, text: &str, remember: bool, auto: bool, source: &str) {
         let input = truncate_utf8(text, MAX_INPUT_BYTES).to_string();
         self.state.input = input.clone();
         self.source = source.to_string();
-        if remember {
-            self.add_history(&input);
-        }
         self.recompute();
+        if remember {
+            self.add_history(&input, auto);
+        }
         self.save();
         self.update_status();
         self.push();
     }
 
     fn clear(&mut self) {
-        self.set_input("", false, "");
+        self.set_input("", false, false, "");
     }
 
     fn set_option(&mut self, key: &str, value: &Value) {
@@ -224,6 +256,12 @@ impl MybatisLog {
             }),
             "nullLiteral" => value.as_str().map(|v| {
                 self.state.options.null_literal = v.to_string();
+            }),
+            "showParamTable" => value.as_bool().map(|v| {
+                self.state.show_param_table = v;
+            }),
+            "riskHints" => value.as_bool().map(|v| {
+                self.state.risk_hints = v;
             }),
             _ => None,
         };
@@ -257,7 +295,8 @@ impl MybatisLog {
                         .get("remember")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
-                    self.set_input(text, remember, "面板输入");
+                    let auto = msg.get("auto").and_then(Value::as_bool).unwrap_or(false);
+                    self.set_input(text, remember, auto, "面板输入");
                 }
             }
             "setOption" => {
@@ -271,7 +310,7 @@ impl MybatisLog {
                     && let Some(item) = self.state.history.get(i as usize)
                 {
                     let text = item.text.clone();
-                    self.set_input(&text, false, "历史记录");
+                    self.set_input(&text, false, false, "历史记录");
                 }
             }
             "deleteHistory" => {
@@ -331,7 +370,7 @@ impl Plugin for MybatisLog {
         match id {
             "restore-selection" => {
                 let text = read_editor_text(ctx)?;
-                self.set_input(&text, true, "编辑器选中");
+                self.set_input(&text, true, false, "编辑器选中");
                 let _ = host::reveal_view(VIEW);
                 if self.results.is_empty() {
                     return Ok(Some(
@@ -406,7 +445,7 @@ mod tests {
     fn restoring_sets_results_and_snapshot_shape() {
         let _host = openidea_plugin::mock::MockHost::install();
         let mut p = plugin();
-        p.set_input(LOG, true, "编辑器选中");
+        p.set_input(LOG, true, false, "编辑器选中");
         assert_eq!(p.results.len(), 1);
         assert_eq!(
             p.results[0].sql,
@@ -425,12 +464,12 @@ mod tests {
         let _host = openidea_plugin::mock::MockHost::install();
         let mut p = plugin();
         p.state.max_history = 3;
-        p.set_input(LOG, true, "面板输入");
-        p.set_input(LOG, true, "面板输入");
+        p.set_input(LOG, true, false, "面板输入");
+        p.set_input(LOG, true, false, "面板输入");
         assert_eq!(p.state.history.len(), 1);
-        p.set_input("Preparing: select 1\nParameters: ", true, "面板输入");
-        p.set_input("Preparing: select 2\nParameters: ", true, "面板输入");
-        p.set_input("Preparing: select 3\nParameters: ", true, "面板输入");
+        p.set_input("Preparing: select 1\nParameters: ", true, false, "面板输入");
+        p.set_input("Preparing: select 2\nParameters: ", true, false, "面板输入");
+        p.set_input("Preparing: select 3\nParameters: ", true, false, "面板输入");
         assert_eq!(p.state.history.len(), 3);
     }
 
@@ -438,7 +477,7 @@ mod tests {
     fn options_change_recomputes_display() {
         let _host = openidea_plugin::mock::MockHost::install();
         let mut p = plugin();
-        p.set_input(LOG, false, "面板输入");
+        p.set_input(LOG, false, false, "面板输入");
         assert!(p.results[0].pretty.contains('\n'));
         p.set_option("pretty", &json!(false));
         assert!(!p.results[0].pretty.contains('\n'));
@@ -449,10 +488,66 @@ mod tests {
     }
 
     #[test]
+    fn display_switches_and_metadata_are_in_the_snapshot() {
+        let _host = openidea_plugin::mock::MockHost::install();
+        let mut p = plugin();
+        p.set_input(LOG, false, false, "面板输入");
+        assert_eq!(p.snapshot()["display"]["showParamTable"], true);
+        assert_eq!(p.snapshot()["display"]["riskHints"], true);
+        assert_eq!(p.results[0].kind, "SELECT");
+        assert_eq!(p.results[0].param_rows.len(), 2);
+        p.set_option("showParamTable", &json!(false));
+        p.set_option("riskHints", &json!(false));
+        assert_eq!(p.snapshot()["display"]["showParamTable"], false);
+        assert_eq!(p.snapshot()["display"]["riskHints"], false);
+    }
+
+    #[test]
+    fn auto_history_merges_and_labels_are_readable() {
+        let _host = openidea_plugin::mock::MockHost::install();
+        let mut p = plugin();
+        p.set_input(LOG, true, true, "面板输入");
+        assert_eq!(p.state.history.len(), 1);
+        assert!(p.state.history[0].label.contains("SELECT"));
+        assert!(p.state.history[0].label.contains("条"));
+        p.set_input("Preparing: update t set a = 1\nParameters: ", true, true, "面板输入");
+        assert_eq!(p.state.history.len(), 1);
+        assert!(p.state.history[0].label.contains("UPDATE"));
+        p.set_input(LOG, true, false, "面板输入");
+        assert_eq!(p.state.history.len(), 2);
+    }
+
+    #[test]
+    fn legacy_state_json_without_auto_field_still_loads() {
+        let state: State = serde_json::from_str(
+            r#"{"input":"x","history":[{"label":"a","text":"b"}],"maxHistory":5}"#,
+        )
+        .unwrap();
+        assert_eq!(state.history.len(), 1);
+        assert!(!state.history[0].auto);
+        assert!(state.show_param_table);
+        assert!(state.risk_hints);
+    }
+
+    #[test]
+    fn history_load_and_delete_roundtrip() {
+        let _host = openidea_plugin::mock::MockHost::install();
+        let mut p = plugin();
+        p.set_input(LOG, true, false, "面板输入");
+        p.on_message(&json!({ "type": "restore", "text": "Preparing: select 9\nParameters: ", "remember": true }).to_string());
+        assert_eq!(p.state.history.len(), 2);
+        p.on_message(&json!({ "type": "history", "index": 1 }).to_string());
+        assert_eq!(p.source, "历史记录");
+        assert_eq!(p.state.input, LOG);
+        p.on_message(&json!({ "type": "deleteHistory", "index": 0 }).to_string());
+        assert_eq!(p.state.history.len(), 1);
+    }
+
+    #[test]
     fn clear_empties_results_but_keeps_history() {
         let _host = openidea_plugin::mock::MockHost::install();
         let mut p = plugin();
-        p.set_input(LOG, true, "面板输入");
+        p.set_input(LOG, true, false, "面板输入");
         p.clear();
         assert!(p.results.is_empty());
         assert_eq!(p.state.input, "");

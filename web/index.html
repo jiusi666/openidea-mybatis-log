@@ -41,6 +41,7 @@
   .toolbar { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px;
     border-bottom: 1px solid var(--line); }
   .row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .row.wrap { flex-wrap: wrap; }
   .segmented { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px;
     padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
   .segmented button { border: 0; border-radius: 5px; background: transparent;
@@ -52,6 +53,7 @@
     color: var(--muted); white-space: nowrap; cursor: pointer; }
   .chk input { margin: 0; accent-color: var(--accent); }
   .lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  #filterText { flex: 1 1 90px; min-width: 70px; padding: 4px 7px; font-size: 12px; }
   .editor { flex: 0 0 auto; padding: 9px 12px 10px; border-bottom: 1px solid var(--line); }
   .editor .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
   .editor .head b { font-size: 12px; font-weight: 600; }
@@ -74,23 +76,39 @@
   .empty b { color: var(--fg); }
   .card { margin: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
     background: var(--solid); overflow: hidden; }
-  .card-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-    background: var(--soft); border-bottom: 1px solid var(--line); }
+  .card-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    background: var(--soft); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .idx { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .tag { font-size: 11px; font-weight: 600; color: var(--accent); letter-spacing: .3px; }
+  .tag.kind-update, .tag.kind-delete, .tag.kind-drop, .tag.kind-truncate,
+  .tag.kind-alter { color: var(--warn); }
+  .meta { font-size: 11px; color: var(--muted); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+    white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+  .meta.num { color: var(--accent); font-variant-numeric: tabular-nums; }
   pre.sql { margin: 0; padding: 10px 12px; background: var(--code);
     white-space: pre-wrap; word-break: break-word;
     font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, "Microsoft YaHei", monospace; }
   .sql .k { color: var(--kw); font-weight: 600; }
   .sql .s { color: var(--str); }
   .sql .n { color: var(--num); }
+  .sql .c { color: var(--muted); font-style: italic; }
   .params { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 12px;
     border-top: 1px solid var(--line); }
   .chip { font: 11px/1.4 ui-monospace, Consolas, monospace; padding: 2px 6px;
     background: var(--soft); border: 1px solid var(--line); border-radius: 4px; }
   .chip i { color: var(--muted); font-style: normal; }
+  .ptable { width: 100%; border-collapse: collapse; border-top: 1px solid var(--line);
+    font: 11px/1.5 ui-monospace, Consolas, monospace; table-layout: fixed; }
+  .ptable th { text-align: left; font-weight: 500; color: var(--muted);
+    background: var(--soft); padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  .ptable td { padding: 4px 8px; border-bottom: 1px solid var(--line); word-break: break-all; }
+  .ptable tr:last-child td { border-bottom: 0; }
+  .ptable th:first-child, .ptable td:first-child { width: 34px; }
+  .ptable th:nth-child(3), .ptable td:nth-child(3) { width: 28%; }
   .warn { padding: 7px 12px; border-top: 1px solid var(--line);
     background: var(--warn-bg); color: var(--warn); font-size: 12px; }
+  .warn.risk { font-weight: 600; }
   .history { display: flex; align-items: center; gap: 7px; padding: 8px 12px;
     border-top: 1px solid var(--line); }
   #history { flex: 1 1 auto; min-width: 0; }
@@ -128,6 +146,22 @@
     <label class="chk"><input type="checkbox" id="upper">关键字大写</label>
     <label class="chk"><input type="checkbox" id="semi">补分号</label>
   </div>
+  <div class="row wrap">
+    <span class="lbl">筛选</span>
+    <select id="filterKind">
+      <option value="ALL">全部类型</option>
+      <option value="SELECT">SELECT</option>
+      <option value="INSERT">INSERT</option>
+      <option value="UPDATE">UPDATE</option>
+      <option value="DELETE">DELETE</option>
+      <option value="SQL">其它</option>
+    </select>
+    <input id="filterText" type="text" placeholder="SQL / logger 关键字" spellcheck="false">
+    <label class="chk"><input type="checkbox" id="onlyRisk">只看风险</label>
+    <span class="grow"></span>
+    <label class="chk"><input type="checkbox" id="showParamTable" checked>参数表</label>
+    <label class="chk"><input type="checkbox" id="riskHints" checked>风险提示</label>
+  </div>
 </div>
 
 <div class="editor">
@@ -137,9 +171,9 @@
 
 <div class="results" id="results"></div>
 
-<div class="history">
+<div class="history" title="停止输入约 1 秒自动记一条；连续修改只保留最后一条。点「还原 SQL」或 Ctrl/⌘+Enter 立即保存一条">
   <span class="lbl">历史</span>
-  <select id="history"><option value="">最近的输入…</option></select>
+  <select id="history"><option value="">最近的输入（停止输入自动保存）…</option></select>
   <button class="mini" id="loadHistory">载入</button>
   <button class="mini" id="delHistory">删除</button>
 </div>
@@ -152,14 +186,15 @@
   var hasHost = !!(window.openidea && window.openidea.postMessage);
   function $(id) { return document.getElementById(id); }
   var inputEl = $('input'), resultsEl = $('results'), toastEl = $('toast');
-  var last = null, timer = null;
+  var filterKind = $('filterKind'), filterText = $('filterText'), onlyRisk = $('onlyRisk');
+  var last = null, timer = null, stableTimer = null;
 
   var KW = { select:1, from:1, where:1, and:1, or:1, not:1, null:1, is:1, in:1, like:1,
     between:1, order:1, by:1, group:1, having:1, limit:1, offset:1, insert:1, into:1,
     values:1, update:1, set:1, delete:1, join:1, left:1, right:1, inner:1, cross:1,
     on:1, union:1, all:1, distinct:1, as:1, case:1, when:1, then:1, else:1, end:1,
     asc:1, desc:1, count:1, sum:1, avg:1, min:1, max:1, exists:1, with:1 };
-  var TOKEN = /('(?:[^']|'')*'|"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*|\d+(?:\.\d+)?)/g;
+  var TOKEN = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*|\d+(?:\.\d+)?)/g;
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -173,7 +208,8 @@
     while ((m = TOKEN.exec(sql)) !== null) {
       out += esc(sql.slice(pos, m.index));
       var t = m[0], cls = '';
-      if (t.charAt(0) === "'" || t.charAt(0) === '"') cls = 's';
+      if (t.slice(0, 2) === '--' || t.slice(0, 2) === '/*') cls = 'c';
+      else if (t.charAt(0) === "'" || t.charAt(0) === '"') cls = 's';
       else if (/^\d/.test(t)) cls = 'n';
       else if (KW[t.toLowerCase()]) cls = 'k';
       out += cls ? '<span class="' + cls + '">' + esc(t) + '</span>' : esc(t);
@@ -182,10 +218,23 @@
     return out + esc(sql.slice(pos));
   }
 
-  function kindOf(sql) {
-    var m = /^\s*([A-Za-z]+)/.exec(sql || '');
-    var k = m ? m[1].toUpperCase() : 'SQL';
-    return ['SELECT','INSERT','UPDATE','DELETE','WITH','REPLACE','SHOW','EXPLAIN'].indexOf(k) >= 0 ? k : 'SQL';
+  var PALETTE = ['#2563eb', '#0f766e', '#b45309', '#7c3aed', '#be185d', '#4d7c0f'];
+  function loggerColor(name) {
+    if (!name) return 'transparent';
+    var h = 0;
+    for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return PALETTE[h % PALETTE.length];
+  }
+
+  function matches(r) {
+    var k = filterKind.value;
+    if (k !== 'ALL' && (r.kind || 'SQL') !== k) return false;
+    if (k === 'SQL' && r.kind && r.kind !== 'SQL') return false;
+    var q = (filterText.value || '').trim().toLowerCase();
+    if (q && (r.sql || '').toLowerCase().indexOf(q) < 0
+      && (r.logger || '').toLowerCase().indexOf(q) < 0) return false;
+    if (onlyRisk.checked && !(r.risks && r.risks.length)) return false;
+    return true;
   }
 
   function toast(msg) {
@@ -195,6 +244,14 @@
     toastEl._t = setTimeout(function () { toastEl.className = 'toast'; }, 1800);
   }
 
+  // 停止输入一会儿后自动记一条历史；host 会把连续的自动记录合并成一条，不刷屏。
+  function scheduleStable(text) {
+    clearTimeout(stableTimer);
+    stableTimer = setTimeout(function () {
+      send({ type: 'restore', text: text, remember: true, auto: true });
+    }, 1200);
+  }
+
   function send(obj) {
     if (hasHost) window.openidea.postMessage(JSON.stringify(obj));
     else localHandle(obj);
@@ -202,7 +259,7 @@
 
   function render(s) {
     last = s;
-    var o = s.options || {};
+    var o = s.options || {}, d = s.display || {};
     // 重绘不能打断用户正在输入的内容。
     if (document.activeElement !== inputEl) inputEl.value = s.input || '';
     $('prettyOn').className = 'seg' + (o.pretty ? ' on' : '');
@@ -211,12 +268,18 @@
     $('nullLit').value = o.nullLiteral === 'null' ? 'null' : 'NULL';
     $('upper').checked = !!o.uppercaseKeywords;
     $('semi').checked = !!o.semicolon;
-    var rs = s.results || [];
-    $('status').textContent = rs.length + ' 条 SQL';
+    $('showParamTable').checked = d.showParamTable !== false;
+    $('riskHints').checked = d.riskHints !== false;
+
+    var rs = s.results || [], shown = [];
+    rs.forEach(function (r, i) { if (matches(r)) shown.push({ r: r, i: i }); });
+    $('status').textContent = shown.length === rs.length
+      ? rs.length + ' 条 SQL'
+      : shown.length + ' / ' + rs.length + ' 条 SQL';
     $('source').textContent = s.source ? '来自' + s.source : '等待输入';
 
     var sel = $('history'), keep = sel.value;
-    var h = '<option value="">最近的输入…</option>';
+    var h = '<option value="">最近的输入（停止输入自动保存）…</option>';
     (s.history || []).forEach(function (item, i) {
       h += '<option value="' + i + '">' + esc(item.label || ('记录 ' + (i + 1))) + '</option>';
     });
@@ -225,17 +288,38 @@
 
     var html = '';
     (s.notes || []).forEach(function (n) { html += '<div class="notes">' + esc(n) + '</div>'; });
-    if (!rs.length && !(s.notes || []).length) {
-      html += '<div class="empty">粘贴含 <b>Preparing</b> / <b>Parameters</b> 的 MyBatis 日志，<br>'
-        + '或选中日志后按 <b>Alt+Shift+M</b>（macOS <b>⌘⇧M</b>）<br>一次可还原多条 SQL，结果可直接复制执行</div>';
+    if (!shown.length && !(s.notes || []).length) {
+      html += '<div class="empty">' + (rs.length
+        ? '当前筛选下没有匹配的 SQL，换个类型或清空关键字试试'
+        : '粘贴含 <b>Preparing</b> / <b>Parameters</b> 的 MyBatis 日志，<br>'
+          + '或选中日志后按 <b>Alt+Shift+M</b>（macOS <b>⌘⇧M</b>）<br>一次可还原多条 SQL，结果可直接复制执行') + '</div>';
     }
-    rs.forEach(function (r, i) {
+    shown.forEach(function (it) {
+      var r = it.r, i = it.i;
       var text = o.pretty ? (r.pretty || r.sql) : r.sql;
-      html += '<div class="card"><div class="card-head">'
-        + '<span class="idx">#' + (i + 1) + '</span><span class="tag">' + kindOf(r.sql) + '</span>'
+      var kind = r.kind || 'SQL';
+      var meta = '';
+      if (r.logger) meta += '<span class="meta" title="' + esc(r.logger) + '">' + esc(r.logger) + '</span>';
+      if (r.elapsedMs != null) meta += '<span class="meta num">' + r.elapsedMs + ' ms</span>';
+      if (r.rows != null) meta += '<span class="meta num">'
+        + (kind === 'SELECT' ? '返回 ' : '影响 ') + r.rows + ' 行</span>';
+      if (r.dialect && r.dialect !== 'mybatis') meta += '<span class="meta">' + esc(r.dialect) + '</span>';
+      html += '<div class="card" style="border-left:3px solid ' + loggerColor(r.logger || '') + '">'
+        + '<div class="card-head"><span class="idx">#' + (i + 1) + '</span>'
+        + '<span class="tag kind-' + kind.toLowerCase() + '">' + esc(kind) + '</span>' + meta
         + '<span class="grow"></span><button class="mini" data-copy="' + i + '">复制</button></div>'
         + '<pre class="sql">' + highlight(text || '') + '</pre>';
-      if (r.params && r.params.length) {
+
+      var showTable = $('showParamTable').checked;
+      if (r.paramRows && r.paramRows.length && showTable) {
+        html += '<table class="ptable"><thead><tr><th>#</th><th>原始值</th>'
+          + '<th>Java 类型</th><th>回填结果</th></tr></thead><tbody>';
+        r.paramRows.forEach(function (p) {
+          html += '<tr><td>' + p.index + '</td><td>' + esc(p.raw) + '</td><td>'
+            + esc(p.javaType || '—') + '</td><td>' + esc(p.rendered) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+      } else if (r.params && r.params.length) {
         html += '<div class="params">';
         r.params.forEach(function (p, j) {
           var ty = (r.types && r.types[j]) ? ' <i>' + esc(r.types[j]) + '</i>' : '';
@@ -245,6 +329,9 @@
       }
       (r.warnings || []).forEach(function (w) {
         html += '<div class="warn">注意：' + esc(w) + '</div>';
+      });
+      if ($('riskHints').checked) (r.risks || []).forEach(function (w) {
+        html += '<div class="warn risk">提示：' + esc(w) + '</div>';
       });
       html += '</div>';
     });
@@ -277,18 +364,19 @@
   }
 
   $('restore').addEventListener('click', function () {
-    clearTimeout(timer);
+    clearTimeout(timer); clearTimeout(stableTimer);
     send({ type: 'restore', text: inputEl.value, remember: true });
   });
   $('clear').addEventListener('click', function () {
-    clearTimeout(timer);
+    clearTimeout(timer); clearTimeout(stableTimer);
     inputEl.value = '';
     send({ type: 'clear' });
   });
   $('copyAll').addEventListener('click', function () {
     var rs = (last && last.results) || [];
-    if (!rs.length) { toast('还没有可复制的 SQL'); return; }
-    copy(rs.map(function (r) { return r.sql; }).join('\n\n'));
+    var shown = rs.filter(matches);
+    if (!shown.length) { toast('当前筛选下没有可复制的 SQL'); return; }
+    copy(shown.map(function (r) { return r.sql; }).join('\n\n'));
   });
   resultsEl.addEventListener('click', function (e) {
     var b = e.target.closest ? e.target.closest('[data-copy]') : null;
@@ -297,15 +385,17 @@
     if (last.results[i]) copy(last.results[i].sql);
   });
   inputEl.addEventListener('input', function () {
-    clearTimeout(timer);
+    clearTimeout(timer); clearTimeout(stableTimer);
+    var text = inputEl.value;
     timer = setTimeout(function () {
-      send({ type: 'restore', text: inputEl.value, remember: false });
+      send({ type: 'restore', text: text, remember: false });
     }, 350);
+    scheduleStable(text);
   });
   inputEl.addEventListener('keydown', function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      clearTimeout(timer);
+      clearTimeout(timer); clearTimeout(stableTimer);
       send({ type: 'restore', text: inputEl.value, remember: true });
     }
   });
@@ -315,6 +405,15 @@
   $('nullLit').addEventListener('change', function () { send({ type: 'setOption', key: 'nullLiteral', value: $('nullLit').value }); });
   $('upper').addEventListener('change', function () { send({ type: 'setOption', key: 'uppercaseKeywords', value: $('upper').checked }); });
   $('semi').addEventListener('change', function () { send({ type: 'setOption', key: 'semicolon', value: $('semi').checked }); });
+  $('showParamTable').addEventListener('change', function () {
+    send({ type: 'setOption', key: 'showParamTable', value: $('showParamTable').checked });
+  });
+  $('riskHints').addEventListener('change', function () {
+    send({ type: 'setOption', key: 'riskHints', value: $('riskHints').checked });
+  });
+  filterKind.addEventListener('change', function () { if (last) render(last); });
+  filterText.addEventListener('input', function () { if (last) render(last); });
+  onlyRisk.addEventListener('change', function () { if (last) render(last); });
   $('loadHistory').addEventListener('click', function () {
     var v = $('history').value;
     if (v !== '') send({ type: 'history', index: parseInt(v, 10) });
@@ -324,11 +423,11 @@
     if (v !== '') { $('history').value = ''; send({ type: 'deleteHistory', index: parseInt(v, 10) }); }
   });
 
-  var DEMO = "==>  Preparing: select id, name, status from user where id = ? and status = ?\n"
-    + "==> Parameters: 1001(Long), ACTIVE(String)\n<==      Total: 1";
+  var DEMO = "2026-11-13 10:00:00.123 DEBUG --- [main] c.e.mapper.UserMapper.selectById : ==>  Preparing: select id, name, status from user where id = ? and status = ?\n"
+    + "==> Parameters: 1001(Long), ACTIVE(String)\n<==      Total: 1\nTime: 12 ms";
   function localHandle(obj) {
     if (obj.type === 'clear') {
-      render({ type: 'snapshot', input: '', options: {}, results: [], notes: [], history: [], source: '' });
+      render({ type: 'snapshot', input: '', options: {}, results: [], notes: [], history: [], source: '', display: {} });
       return;
     }
     if (obj.type !== 'init' && obj.type !== 'restore') return;
@@ -339,10 +438,17 @@
       results: [{
         sql: "select id, name, status from user where id = 1001 and status = 'ACTIVE'",
         pretty: "select id, name, status from user\nwhere id = 1001\n  and status = 'ACTIVE'",
-        original: '', params: ['1001', "'ACTIVE'"], types: ['Long', 'String'], warnings: []
+        original: '', params: ['1001', "'ACTIVE'"], types: ['Long', 'String'], warnings: [],
+        kind: 'SELECT', logger: 'UserMapper.selectById', elapsedMs: 12, rows: 1,
+        paramRows: [
+          { index: 1, raw: '1001', javaType: 'Long', rendered: '1001' },
+          { index: 2, raw: 'ACTIVE', javaType: 'String', rendered: "'ACTIVE'" }
+        ],
+        risks: [], dialect: 'mybatis'
       }],
       notes: [], history: [{ label: '本地预览示例', text: DEMO }],
-      source: '本地预览', maxHistory: 10
+      source: '本地预览', maxHistory: 10,
+      display: { showParamTable: true, riskHints: true }
     });
   }
 

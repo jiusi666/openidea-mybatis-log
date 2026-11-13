@@ -55,7 +55,7 @@ impl Options {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Restored {
     /// 可直接执行、单行的 SQL。
     pub sql: String,
@@ -68,12 +68,39 @@ pub struct Restored {
     /// 参数在日志里的 Java 类型名。
     pub types: Vec<String>,
     pub warnings: Vec<String>,
+    /// SQL 类型（SELECT / INSERT / UPDATE / DELETE …），供筛选与徽章使用。
+    pub kind: String,
+    /// 日志前缀里的 logger / mapper 名，供分组着色使用。
+    pub logger: String,
+    /// 日志里解析出的耗时（毫秒）。
+    pub elapsed_ms: Option<u64>,
+    /// `<== Total:` / `Updates:` 之类的结果行数。
+    pub rows: Option<u64>,
+    /// 参数对照表：序号、原始值、Java 类型、回填结果。
+    pub param_rows: Vec<ParamRow>,
+    /// 静态风险提示（无 WHERE 的 UPDATE/DELETE 等）。
+    pub risks: Vec<String>,
+    /// 识别到的日志方言。
+    pub dialect: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ParamRow {
+    pub index: usize,
+    pub raw: String,
+    pub java_type: String,
+    pub rendered: String,
 }
 
 #[derive(Default, Clone, Debug)]
 struct Entry {
     sql: String,
     params: Option<String>,
+    /// 从日志前缀里提取的 logger / mapper 名。
+    logger: String,
+    elapsed_ms: Option<u64>,
+    rows: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -90,10 +117,7 @@ pub fn restore(log: &str, opt: &Options) -> (Vec<Restored>, Vec<String>) {
 
     let mut entries = parse_entries(safe);
     if entries.is_empty() && looks_like_sql(safe) {
-        entries.push(Entry {
-            sql: safe.trim().to_string(),
-            params: None,
-        });
+        entries.push(new_entry(safe.trim().to_string(), ""));
         notes.push("没有 Preparing 前缀，已按单条 SQL 原样格式化".to_string());
     }
     if entries.len() >= MAX_ENTRIES {
@@ -109,6 +133,18 @@ pub fn restore(log: &str, opt: &Options) -> (Vec<Restored>, Vec<String>) {
         );
         return (Vec::new(), notes);
     }
+
+    let lower = safe.to_ascii_lowercase();
+    let dialect = if lower.contains("binding parameter") {
+        "hibernate"
+    } else if lower.contains("p6spy") || lower.contains("|statement|") {
+        "p6spy"
+    } else if lower.contains("druid") {
+        "druid"
+    } else {
+        "mybatis"
+    }
+    .to_string();
 
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -135,6 +171,19 @@ pub fn restore(log: &str, opt: &Options) -> (Vec<Restored>, Vec<String>) {
             sql.push(';');
         }
         let pretty = display_sql(&sql, opt);
+        let kind = sql_kind(&sql);
+        let risks = detect_risks(&sql);
+        let param_rows = params
+            .iter()
+            .zip(rendered.iter())
+            .enumerate()
+            .map(|(i, (p, r))| ParamRow {
+                index: i + 1,
+                raw: p.value.clone(),
+                java_type: p.ty.clone().unwrap_or_default(),
+                rendered: r.clone(),
+            })
+            .collect();
         out.push(Restored {
             sql,
             pretty,
@@ -145,6 +194,13 @@ pub fn restore(log: &str, opt: &Options) -> (Vec<Restored>, Vec<String>) {
                 .map(|p| p.ty.clone().unwrap_or_default())
                 .collect(),
             warnings,
+            kind,
+            logger: entry.logger,
+            elapsed_ms: entry.elapsed_ms,
+            rows: entry.rows,
+            param_rows,
+            risks,
+            dialect: dialect.clone(),
         });
     }
     (out, notes)
@@ -165,30 +221,169 @@ fn find_marker(line: &str, marker: &str) -> Option<usize> {
     line.to_ascii_lowercase().find(&marker.to_ascii_lowercase())
 }
 
-/// 逐行抽取 Preparing / Parameters 对，兼容 `==>`、时间戳、logger 名等前缀。
-fn parse_entries(log: &str) -> Vec<Entry> {
+/// 取 `[...]` 里的第一个值，Hibernate 的 binding parameter 用。
+fn bracket_value(s: &str) -> String {
+    let t = s.trim();
+    if let Some(a) = t.find('[')
+        && let Some(b) = t[a + 1..].find(']')
+    {
+        return t[a + 1..a + 1 + b].trim().to_string();
+    }
+    t.to_string()
+}
+
+/// 把常见的其它日志格式规整成带 `Preparing:` / `Parameters:` 标记的普通文本。
+fn normalize_line(raw: &str) -> String {
+    let t = raw.trim();
+    // log4j2 JSON 布局：取 message 字段。
+    if t.starts_with('{')
+        && t.contains("\"message\"")
+        && let Some(v) = json_message(t)
+    {
+        return v;
+    }
+    let low = t.to_ascii_lowercase();
+    if let Some(pos) = low.find("|statement|") {
+        return format!("Preparing: {}", t[pos + "|statement|".len()..].trim());
+    }
+    if let Some(pos) = low.find("|parameters|") {
+        return format!("Parameters: {}", t[pos + "|parameters|".len()..].trim());
+    }
+    if let Some(pos) = low.find("hibernate:") {
+        return format!("Preparing: {}", t[pos + "hibernate:".len()..].trim());
+    }
+    t.to_string()
+}
+
+/// 只处理简单转义；JSON 布局里 message 就是一行日志文本。
+fn json_message(line: &str) -> Option<String> {
+    let key = "\"message\"";
+    let p = line.find(key)?;
+    let rest = &line[p + key.len()..];
+    let colon = rest.find(':')?;
+    let rest = rest[colon + 1..].trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in rest[1..].chars() {
+        if escaped {
+            match c {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                other => out.push(other),
+            }
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+fn new_entry(sql: String, prefix: &str) -> Entry {
+    Entry {
+        sql,
+        params: None,
+        logger: extract_logger(prefix),
+        elapsed_ms: parse_duration_ms(prefix),
+        rows: None,
+    }
+}
+
+/// Hibernate 的 SQL 与参数是分开若干行打印的，单独走一条解析路径。
+fn parse_hibernate(log: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut current: Option<Entry> = None;
-    for line in log.lines() {
-        let raw = line.trim();
-        if raw.is_empty() {
+    let mut bindings: Vec<String> = Vec::new();
+    for raw in log.lines() {
+        let line = normalize_line(raw);
+        let low = line.to_ascii_lowercase();
+        if let Some(pos) = low.find("binding parameter") {
+            let rest = &line[pos + "binding parameter".len()..];
+            let value_part = rest.rsplit_once(" - ").map_or(rest, |(_, v)| v);
+            let value = bracket_value(value_part);
+            let ty = rest
+                .split_once(" as ")
+                .map(|(_, v)| bracket_value(v))
+                .unwrap_or_default();
+            let token = if ty.is_empty() {
+                value
+            } else {
+                format!("{value}({ty})")
+            };
+            bindings.push(token);
             continue;
         }
-        if let Some(pos) = find_marker(raw, "Preparing:") {
+        if let Some(pos) = find_marker(&line, "Preparing:") {
+            if let Some(mut e) = current.take() {
+                e.params = Some(bindings.join(", "));
+                bindings.clear();
+                push_entry(&mut entries, e);
+            }
+            let prefix = line[..pos].to_string();
+            let sql = line[pos + "Preparing:".len()..].trim().to_string();
+            current = Some(new_entry(sql, &prefix));
+            continue;
+        }
+        if let Some(e) = current.as_mut() {
+            if e.rows.is_none() {
+                e.rows = parse_rows(&line);
+            }
+            if e.elapsed_ms.is_none() {
+                e.elapsed_ms = parse_duration_ms(&line);
+            }
+        }
+    }
+    if let Some(mut e) = current {
+        e.params = Some(bindings.join(", "));
+        push_entry(&mut entries, e);
+    }
+    entries
+}
+
+/// 逐行抽取 Preparing / Parameters 对，兼容 `==>`、时间戳、logger 名等前缀。
+fn parse_entries(log: &str) -> Vec<Entry> {
+    if log.to_ascii_lowercase().contains("binding parameter") {
+        return parse_hibernate(log);
+    }
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut current: Option<Entry> = None;
+    for raw in log.lines() {
+        let line = normalize_line(raw);
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(pos) = find_marker(line, "Preparing:") {
             if let Some(e) = current.take() {
                 push_entry(&mut entries, e);
             }
-            let rest = raw[pos + "Preparing:".len()..].trim().to_string();
-            current = Some(Entry {
-                sql: rest,
-                params: None,
-            });
+            let prefix = line[..pos].to_string();
+            let sql = line[pos + "Preparing:".len()..].trim().to_string();
+            current = Some(new_entry(sql, &prefix));
             continue;
         }
-        if let Some(pos) = find_marker(raw, "Parameters:")
+        if let Some(pos) = find_marker(line, "Parameters:")
             && let Some(e) = current.as_mut()
         {
-            e.params = Some(raw[pos + "Parameters:".len()..].trim().to_string());
+            e.params = Some(line[pos + "Parameters:".len()..].trim().to_string());
+            continue;
+        }
+        // 结果行：<== Total: 1 / Updates: 2 / Time: 12 ms
+        if let Some(e) = current.as_mut() {
+            if e.rows.is_none() {
+                e.rows = parse_rows(line);
+            }
+            if e.elapsed_ms.is_none() {
+                e.elapsed_ms = parse_duration_ms(line);
+            }
         }
     }
     if let Some(e) = current {
@@ -201,6 +396,119 @@ fn push_entry(entries: &mut Vec<Entry>, e: Entry) {
     if entries.len() < MAX_ENTRIES && !e.sql.is_empty() {
         entries.push(e);
     }
+}
+
+/// 从 Preparing 行的前缀里挑一个短 logger / mapper 名。
+fn extract_logger(prefix: &str) -> String {
+    let cleaned = prefix
+        .replace("==>", " ")
+        .replace("<==", " ")
+        .replace("-->", " ");
+    let mut best = "";
+    for tok in cleaned.split_whitespace() {
+        let t = tok.trim_end_matches(':');
+        if t.contains('.')
+            && !t.contains(':')
+            && t.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            best = t;
+        }
+    }
+    if best.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<&str> = best.split('.').collect();
+    let short = if parts.len() > 2 {
+        parts[parts.len() - 2..].join(".")
+    } else {
+        best.to_string()
+    };
+    short.chars().take(48).collect()
+}
+
+/// 从 `(123 ms)` / `Time: 12 ms` / `耗时 12 毫秒` 里取毫秒数。
+fn parse_duration_ms(s: &str) -> Option<u64> {
+    let low = s.to_ascii_lowercase();
+    let marker = low.find("ms").or_else(|| low.find("毫秒"))?;
+    let before = s[..marker].trim_end();
+    let digits: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.trim_end_matches('.').parse::<f64>().ok().map(|n| n.round() as u64)
+}
+
+/// 从 `<== Total: 1` / `Updates: 2` 里取影响或返回行数。
+fn parse_rows(s: &str) -> Option<u64> {
+    let low = s.to_ascii_lowercase();
+    for key in [
+        "total:",
+        "updates:",
+        "rows:",
+        "row:",
+        "影响行数:",
+        "affected rows:",
+    ] {
+        if let Some(i) = low.find(key) {
+            let rest = s[i + key.len()..].trim();
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if !digits.is_empty() {
+                return digits.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+fn sql_kind(sql: &str) -> String {
+    let first = sql
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || c == '(')
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    if [
+        "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "REPLACE", "SHOW", "EXPLAIN", "TRUNCATE",
+        "ALTER", "DROP", "MERGE",
+    ]
+    .contains(&first.as_str())
+    {
+        first
+    } else {
+        "SQL".to_string()
+    }
+}
+
+/// 纯文本级的静态风险提示，不做 SQL 解析。
+fn detect_risks(sql: &str) -> Vec<String> {
+    let low = sql.to_ascii_lowercase();
+    let kind = sql_kind(sql);
+    let has_where = low
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|w| w == "where");
+    let mut out = Vec::new();
+    if matches!(kind.as_str(), "UPDATE" | "DELETE") && !has_where {
+        out.push("UPDATE / DELETE 没有 WHERE 条件，会作用于全表".to_string());
+    }
+    if [
+        "truncate table",
+        "drop table",
+        "drop database",
+        "alter table",
+    ]
+    .iter()
+    .any(|p| low.contains(p))
+    {
+        out.push("包含 TRUNCATE / DROP / ALTER，执行前请确认".to_string());
+    }
+    if kind == "SELECT" && low.contains("select *") && !has_where {
+        out.push("SELECT 无过滤条件，可能返回全表数据".to_string());
+    }
+    out
 }
 
 fn looks_like_sql(text: &str) -> bool {
@@ -605,6 +913,133 @@ pub fn display_sql(sql: &str, opt: &Options) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_kind_logger_rows_duration_and_param_rows() {
+        let log = "2026-11-13 10:00:00.123 DEBUG 1 --- [main] c.e.mapper.UserMapper.selectById : ==>  Preparing: select * from user where id = ?\n\
+                   2026-11-13 10:00:00.130 DEBUG 1 --- [main] c.e.mapper.UserMapper.selectById : ==> Parameters: 7(Long)\n\
+                   <==      Total: 1\nTime: 12 ms";
+        let r = one(log, &plain());
+        assert_eq!(r.sql, "select * from user where id = 7");
+        assert_eq!(r.kind, "SELECT");
+        assert_eq!(r.logger, "UserMapper.selectById");
+        assert_eq!(r.rows, Some(1));
+        assert_eq!(r.elapsed_ms, Some(12));
+        assert_eq!(r.dialect, "mybatis");
+        assert_eq!(r.param_rows.len(), 1);
+        assert_eq!(r.param_rows[0].index, 1);
+        assert_eq!(r.param_rows[0].raw, "7");
+        assert_eq!(r.param_rows[0].java_type, "Long");
+        assert_eq!(r.param_rows[0].rendered, "7");
+    }
+
+    #[test]
+    fn hibernate_binding_parameters_are_restored() {
+        let log = "Hibernate: select name from user where id = ? and status = ?\n\
+                   binding parameter [1] as [BIGINT] - [7]\n\
+                   binding parameter [2] as [VARCHAR] - [ACTIVE]";
+        let r = one(log, &plain());
+        assert_eq!(r.dialect, "hibernate");
+        assert_eq!(r.sql, "select name from user where id = 7 and status = 'ACTIVE'");
+        assert_eq!(r.param_rows.len(), 2);
+    }
+
+    #[test]
+    fn p6spy_and_json_layout_lines_are_normalized() {
+        let r = one(
+            "|statement| select * from user where id = ?\n|parameters| 7(Long)",
+            &plain(),
+        );
+        assert_eq!(r.dialect, "p6spy");
+        assert_eq!(r.sql, "select * from user where id = 7");
+
+        let json = "{\"message\":\"==>  Preparing: select 1 where id = ?\",\"level\":\"DEBUG\"}\n\
+                    {\"message\":\"==> Parameters: 9(Long)\"}";
+        let r2 = one(json, &plain());
+        assert_eq!(r2.sql, "select 1 where id = 9");
+    }
+
+    #[test]
+    fn risks_flag_unbounded_writes_and_select_all() {
+        assert!(one("Preparing: update user set status = 1\nParameters: ", &plain())
+            .risks
+            .iter()
+            .any(|x| x.contains("WHERE")));
+        assert!(one("Preparing: delete from user\nParameters: ", &plain())
+            .risks
+            .iter()
+            .any(|x| x.contains("WHERE")));
+        assert!(one("Preparing: select * from user\nParameters: ", &plain())
+            .risks
+            .iter()
+            .any(|x| x.contains("全表")));
+        assert!(one("Preparing: select * from user where id = ?\nParameters: 1(Long)", &plain())
+            .risks
+            .is_empty());
+    }
+
+    #[test]
+    fn duration_rows_and_kind_helpers() {
+        assert_eq!(parse_duration_ms("2026-01-01 10:00:00 Time: 12 ms"), Some(12));
+        assert_eq!(parse_duration_ms("(123 ms)"), Some(123));
+        assert_eq!(parse_duration_ms("no timing here"), None);
+        assert_eq!(parse_rows("<==      Total: 42"), Some(42));
+        assert_eq!(parse_rows("<==    Updates: 3"), Some(3));
+        assert_eq!(parse_rows("nothing"), None);
+        assert_eq!(sql_kind("  select 1"), "SELECT");
+        assert_eq!(sql_kind("insert into t values (1)"), "INSERT");
+        assert_eq!(sql_kind("update t set a=1 where id=1"), "UPDATE");
+        assert_eq!(sql_kind("whatever"), "SQL");
+        assert!(detect_risks("drop table user").iter().any(|r| r.contains("DROP")));
+    }
+
+    /// 交付给用户手动验收用的综合样本，同时作为回归用例固定下来。
+    #[test]
+    fn manual_test_sample_bundle_parses() {
+        let log = "2026-11-13 14:02:11.101 DEBUG 12345 --- [main] com.example.mapper.UserMapper.selectById : ==>  Preparing: select id, name, status from t_user where id = ? and status = ?\n\
+                   2026-11-13 14:02:11.104 DEBUG 12345 --- [main] com.example.mapper.UserMapper.selectById : ==> Parameters: 1001(Long), ACTIVE(String)\n\
+                   <==      Total: 1\n\
+                   Time: 12 ms\n\
+                   2026-11-13 14:02:12.220  INFO 12345 --- [main] com.example.mapper.OrderMapper.insert : ==>  Preparing: insert into t_order (user_id, amount, remark) values (?, ?, ?)\n\
+                   2026-11-13 14:02:12.221  INFO 12345 --- [main] com.example.mapper.OrderMapper.insert : ==> Parameters: 1001(Long), 199.50(BigDecimal), 含,逗号(String)\n\
+                   <==    Updates: 1\n\
+                   Time: 8 ms\n\
+                   2026-11-13 14:02:13.300  WARN 12345 --- [main] com.example.mapper.UserMapper.updateAll : ==>  Preparing: update t_user set status = ?\n\
+                   2026-11-13 14:02:13.301  WARN 12345 --- [main] com.example.mapper.UserMapper.updateAll : ==> Parameters: DISABLED(String)\n\
+                   <==    Updates: 3\n\
+                   Time: 5 ms\n\
+                   2026-11-13 14:02:14.400 DEBUG 12345 --- [main] com.example.mapper.LogMapper.deleteAll : ==>  Preparing: delete from t_log\n\
+                   2026-11-13 14:02:14.401 DEBUG 12345 --- [main] com.example.mapper.LogMapper.deleteAll : ==> Parameters: \n\
+                   Time: 2 ms\n\
+                   2026-11-13 14:02:15.500 DEBUG 12345 --- [main] com.example.mapper.UserMapper.search : ==>  Preparing: select * from t_user\n\
+                   2026-11-13 14:02:15.501 DEBUG 12345 --- [main] com.example.mapper.UserMapper.search : ==> Parameters: \n\
+                   <==      Total: 42\n\
+                   Time: 31 ms\n\
+                   2026-11-13 14:02:16.600 DEBUG 12345 --- [main] com.example.mapper.UserMapper.quoteTest : ==>  Preparing: select * from t_user where name = ? and note = ? and created = ? and flag = ?\n\
+                   2026-11-13 14:02:16.601 DEBUG 12345 --- [main] com.example.mapper.UserMapper.quoteTest : ==> Parameters: O'Brien(String), null, 2026-01-02 03:04:05.0(Timestamp), true(Boolean)\n\
+                   <==      Total: 0\n\
+                   Time: 7 ms";
+        let (rs, notes) = restore(log, &plain());
+        assert!(notes.is_empty(), "unexpected notes: {notes:?}");
+        assert_eq!(rs.len(), 6);
+        assert_eq!(rs[0].kind, "SELECT");
+        assert_eq!(rs[0].logger, "UserMapper.selectById");
+        assert_eq!(rs[0].rows, Some(1));
+        assert_eq!(rs[0].elapsed_ms, Some(12));
+        assert_eq!(rs[0].param_rows.len(), 2);
+        assert_eq!(rs[1].kind, "INSERT");
+        assert_eq!(rs[1].logger, "OrderMapper.insert");
+        assert_eq!(rs[1].rows, Some(1));
+        assert_eq!(rs[1].param_rows.len(), 3);
+        assert!(rs[2].risks.iter().any(|x| x.contains("WHERE")));
+        assert!(rs[3].risks.iter().any(|x| x.contains("WHERE")));
+        assert!(rs[4].risks.iter().any(|x| x.contains("全表")));
+        assert_eq!(rs[4].rows, Some(42));
+        assert_eq!(rs[4].elapsed_ms, Some(31));
+        assert!(rs[5].sql.contains("O''Brien"));
+        assert!(rs[5].sql.contains("NULL"));
+        assert_eq!(rs[5].param_rows.len(), 4);
+    }
 
     fn plain() -> Options {
         Options {

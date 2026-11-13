@@ -34,10 +34,20 @@
       "minimum": 1,
       "maximum": 30
     },
-    "showStatusBar": {
-      "type": "boolean",
-      "title": "在状态栏显示最近一次还原的 SQL 条数",
-      "default": true
-    }
+  "showStatusBar": {
+   "type": "boolean",
+   "title": "在状态栏显示最近一次还原的 SQL 条数",
+   "default": true
+  },
+  "showParamTable": {
+   "type": "boolean",
+   "title": "用表格展开参数对照（关闭时显示紧凑参数标签）",
+   "default": true
+  },
+  "riskHints": {
+   "type": "boolean",
+   "title": "显示静态 SQL 风险提示（无 WHERE 的 UPDATE/DELETE 等）",
+   "default": true
   }
+ }
 }

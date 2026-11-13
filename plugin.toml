@@ -1,14 +1,25 @@
 id = "jiusi.mybatis-log"
 name = "MyBatis Log"
-version = "0.1.0"
-description = "把 MyBatis 控制台日志里的 Preparing / Parameters 还原成可直接执行的 SQL：支持粘贴或选中日志、批量还原、字符串与日期自动加引号、null 与数值类型识别、子句换行美化、一键复制和历史记录。只读当前编辑器文本，全部在本机计算，结果缓存在本机；不联网、不执行程序、不修改项目文件。"
+version = "0.2.1"
+description = "把 MyBatis / MyBatis-Plus / Hibernate 日志里的 Preparing / Parameters 还原成可直接执行的 SQL：批量还原、类型化参数回填、SQL 语法高亮、参数对照表、耗时与影响行数、按类型筛选、静态风险提示、一键复制和历史记录。只读当前编辑器文本，全部在本机计算；不联网、不执行程序、不修改项目文件。欢迎一起参与开发，Java 技术交流 Q 群：700072697。"
 authors = ["九思"]
 license = "Apache-2.0"
-change-notes = """0.1.0 — 首个版本
+change-notes = """0.2.1 — 历史记录修好
+· 粘贴后停止输入约 1 秒会自动记一条历史，连续修改只合并为一条，不刷屏
+· 历史标签改为「SQL 类型 · 条数 · SQL 开头」，不再是一串看不出区别的时间戳
+· 「还原 SQL」按钮 / Ctrl+Enter 仍会立即另存一条；载入、删除、旧数据兼容均已补测试
+· 能力仍只有 editor.read + storage 两个 Low
+0.2.0 — 零新能力增强
+· SQL 类型徽章、logger 分组着色、耗时与 Total / Updates 影响行数
+· 参数对照表（序号 / 原始值 / Java 类型 / 回填结果），可切回紧凑参数标签
+· 按 SQL 类型与关键字筛选、只看风险；静态风险提示（无 WHERE 的 UPDATE/DELETE 等）
+· 语法高亮支持注释；兼容 Hibernate binding parameter、P6Spy、log4j2 JSON 日志
+· 能力仍只有 editor.read + storage 两个 Low，无需重新授权
+0.1.0 — 首个版本
 · 粘贴或选中 MyBatis 日志，按 ? 顺序还原参数，自动处理引号、null、数值、日期与布尔值
 · 兼容 logback / MyBatis-Plus 等带时间戳前缀的日志，一次可还原多条 SQL
 · 关键字大写、子句换行美化、末尾分号、单双引号与 null 写法可配置
-· 结果一键复制、历史记录本地保存；只申请 editor.read + storage 两个低风险能力"""
+· 结果一键复制、历史记录本地保存"""
 categories = ["tools"]
 engines.openidea = "^1.4"
 icon = "icons/icon.svg"
